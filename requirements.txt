@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pymysql
+pydantic[email]
+python-dotenv
+passlib[bcrypt]
+python-jose[cryptography]
+litellm
+python-multipart
+google-generativeai
+python-dotenv
+uvicorn
