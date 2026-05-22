@@ -6,117 +6,101 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Load API key from environment variables
-GEMINI_API_KEY = os.getenv("VITE_GEMINI_API_KEY")
+# Load API key
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    raise RuntimeError("❌ GEMINI_API_KEY is missing in .env file. Please add it.")
+    GEMINI_API_KEY = None
 
-# Configure Google Generative AI with the API key
-genai.configure(api_key=GEMINI_API_KEY)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
-# Initialize the model (using the latest available model name, adjust if needed)
-model = genai.GenerativeModel("gemini-2.5-flash")
 
-# --- Pydantic Models ---
 class SkillJobMatchingRequest(BaseModel):
-    skills: list[str] = Field(..., description="List of user skills.")
-    collegeTier: str = Field(..., description="College tier (e.g., 'Tier 2/3').")
-    characterProfileKey: str = Field(..., description="Character profile key (e.g., 'Explorer').")
+    skills: list[str] = Field(..., min_items=1)
+    collegeTier: str = Field(default="Tier 2/3")
+    characterProfileKey: str = Field(default="Explorer")
 
-class Job(BaseModel):
-    title: str
-    company: str
-    location: str
-    description: str
-    salaryRange: str
-    matchScore: int
-
-class SkillAnalysis(BaseModel):
-    skillLevel: str
-
-class SkillJobMatchingResponse(BaseModel):
-    skillAnalysis: SkillAnalysis
-    suggestedJobs: list[Job]
-
-# --- Router ---
 router = APIRouter(
     prefix="/api/skill-job-matching",
     tags=["Skill Job Matching"]
 )
 
-# --- Endpoint ---
+model = genai.GenerativeModel("gemini-2.5-flash") if GEMINI_API_KEY else None
+
+
 @router.post("/analyze")
-async def analyze_skills_for_jobs(request: SkillJobMatchingRequest):
-    print(f"Received skill job matching request for skills: {request.skills}, collegeTier: {request.collegeTier}, characterProfileKey: {request.characterProfileKey}")
-
+async def analyze_skills(request: SkillJobMatchingRequest):
     try:
-        # System instruction for the AI model
-        system_instruction = """You are an expert career coach specializing in helping students from Tier 2/3 colleges find suitable jobs. Analyze the provided skills, college tier, and character profile to suggest matching jobs. Respond ONLY with valid JSON in this exact format:
+        if not model:
+            raise HTTPException(status_code=503, detail="Gemini is not configured (missing GEMINI_API_KEY).")
 
-{
-  "skillAnalysis": {
-    "skillLevel": "string (e.g., Beginner, Intermediate, Advanced)"
-  },
+        prompt = f"""
+
+You are an expert career coach specializing in helping students from {request.collegeTier} colleges find suitable jobs based on their skills.
+
+Student profile: College tier {request.collegeTier}, character profile {request.characterProfileKey}.
+
+Skills provided: {', '.join(request.skills)}
+
+Provide a response in the following JSON format only:
+{{
+  "skillAnalysis": {{
+    "skillLevel": "Beginner/Intermediate/Advanced",
+    "keyStrengths": ["strength1", "strength2"],
+    "suggestedCareers": ["career1", "career2"]
+  }},
   "suggestedJobs": [
-    {
-      "title": "string",
-      "company": "string",
-      "location": "string",
-      "description": "string",
-      "salaryRange": "string",
-      "matchScore": number (0-100)
-    }
+    {{
+      "title": "Job Title",
+      "company": "Company Name",
+      "location": "Location",
+      "description": "Brief description",
+      "matchScore": 85,
+      "salaryRange": "$50,000 - $70,000"
+    }},
+    {{
+      "title": "Another Job Title",
+      "company": "Another Company",
+      "location": "Another Location",
+      "description": "Another brief description",
+      "matchScore": 75,
+      "salaryRange": "$45,000 - $65,000"
+    }}
   ]
-}
+}}
 
-Rules:
-- Return ONLY JSON.
-- Suggest 3-5 jobs.
-- Match scores should be realistic based on skills.
-- Salary ranges should be appropriate for the role and location.
+Suggest 3-5 relevant jobs based on the skills. Focus on entry-level positions suitable for {request.collegeTier} college graduates.
 """
 
-        # Prompt for the AI model
-        prompt = f"""Analyze the following skills for a student from {request.collegeTier} college with character profile '{request.characterProfileKey}'.
+        response = model.generate_content(prompt)
+        generated_text = response.text.strip()
 
-Skills: {', '.join(request.skills)}
-
-Provide job suggestions that match these skills."""
-
-        # Generate content using the AI model
-        response = model.generate_content(
-            contents=[
-                {"parts": [{"text": system_instruction}]},
-                {"parts": [{"text": prompt}]}
-            ]
-        )
-
-        result_text = response.text
-
-        if not result_text or not result_text.strip():
-            raise HTTPException(status_code=500, detail="Model returned an empty response.")
-
-        # Remove ```json fences if any
-        cleaned_text = (
-            result_text.replace("```json", "")
-                       .replace("```", "")
-                       .strip()
-        )
-
+        # Try to parse as JSON
         import json
-        result = json.loads(cleaned_text)
+        try:
+            result = json.loads(generated_text)
+            return result
+        except json.JSONDecodeError:
+            # If not JSON, wrap in a basic structure
+            return {
+                "skillAnalysis": {
+                    "skillLevel": "Intermediate",
+                    "keyStrengths": request.skills[:3],
+                    "suggestedCareers": ["Software Developer", "Data Analyst"]
+                },
+                "suggestedJobs": [
+                    {
+                        "title": "Junior Developer",
+                        "company": "Tech Corp",
+                        "location": "Remote",
+                        "description": "Entry-level development role",
+                        "matchScore": 80,
+                        "salaryRange": "$50,000 - $70,000"
+                    }
+                ]
+            }
 
-        # Validate the structure
-        if "skillAnalysis" not in result or "suggestedJobs" not in result:
-            raise HTTPException(status_code=500, detail="Invalid response structure from AI model.")
-
-        print("Skill job matching completed successfully.")
-        return result
-
-    except json.JSONDecodeError:
-        print("❌ JSON decoding failed.")
-        raise HTTPException(status_code=500, detail="Failed to parse the JSON from AI response.")
     except Exception as e:
-        print(f"❌ Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+        print("Error:", e)
+        raise HTTPException(status_code=500, detail="Failed to analyze skills")

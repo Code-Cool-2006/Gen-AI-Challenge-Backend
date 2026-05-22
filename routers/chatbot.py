@@ -7,12 +7,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Load API key
-GEMINI_API_KEY = os.getenv("VITE_GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    raise RuntimeError("❌ GEMINI_API_KEY is missing in .env")
+    GEMINI_API_KEY = None
 
-genai.configure(api_key=GEMINI_API_KEY)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -22,7 +24,8 @@ router = APIRouter(
     tags=["ChatBot"]
 )
 
-model = genai.GenerativeModel("gemini-2.5-flash")  # or gemini-2.0, etc.
+model = genai.GenerativeModel("gemini-2.5-flash") if GEMINI_API_KEY else None  # or gemini-2.0, etc.
+
 
 @router.post("/")
 async def chat_with_bot(data: ChatRequest):
@@ -35,11 +38,15 @@ If the question is outside this scope, politely decline.
 User question: {data.message}
 """
 
+        if not model:
+            return {"error": "Gemini is not configured (missing GEMINI_API_KEY)."}
+
         response = model.generate_content(prompt)
 
         return {
             "response": response.text
         }
+
 
     except Exception as e:
         print("Error:", e)

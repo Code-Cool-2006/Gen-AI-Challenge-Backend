@@ -1,23 +1,24 @@
 
 import json
+import re
 import google.generativeai as genai
 import os
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+
 # Load environment variables
 load_dotenv()
-GEMINI_API_KEY = os.getenv("VITE_GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not GEMINI_API_KEY:
-    raise RuntimeError("❌ GEMINI_API_KEY is missing in .env")
+# Configure Google Generative AI (only if key exists)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("gemini-2.5-flash")
+else:
+    model = None
 
-# Configure Google Generative AI
-genai.configure(api_key=GEMINI_API_KEY)
-
-# Initialize model
-model = genai.GenerativeModel("gemini-2.5-flash")
 
 # --- Pydantic Model ---
 class MarketInsightsRequest(BaseModel):
@@ -54,9 +55,12 @@ Rules:
 - 5–10 skills.
 """
 
+        if model is None:
+            raise HTTPException(status_code=503, detail="Gemini is not configured (missing GEMINI_API_KEY).")
+
         prompt = f'Provide job market insights for "{request.jobTitle}".'
 
-        # --- FIXED Gemini Request Format ---
+        # --- Gemini Request Format ---
         response = model.generate_content(
             contents=[
                 {
@@ -70,6 +74,7 @@ Rules:
 
         result_text = response.text
 
+
         if not result_text or not result_text.strip():
             raise HTTPException(status_code=500, detail="Model returned an empty response.")
 
@@ -80,7 +85,14 @@ Rules:
                        .strip()
         )
 
-        insights_data = json.loads(cleaned_text)
+        # Robust JSON extraction (Gemini sometimes wraps output with extra text)
+        json_match = re.search(r"\{[\s\S]*\}", cleaned_text)
+        if not json_match:
+            raise HTTPException(status_code=500, detail="AI response did not contain a valid JSON object.")
+
+        extracted = json_match.group(0)
+        insights_data = json.loads(extracted)
+
 
         print("Market insights generated successfully.")
         return insights_data

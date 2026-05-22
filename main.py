@@ -1,63 +1,80 @@
 import logging
+import time
+import os
+from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 load_dotenv()
-from fastapi import FastAPI
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-from database import engine, Base  # Assuming you have database.py
+from fastapi.responses import JSONResponse
+
+from database import engine, Base
+from utils.security import general_limiter, get_client_ip
+
+
+# ── Routers ──────────────────────────────────────────────────
 from routers.auth import router as auth_router
 from routers.user import router as user_router
 from routers.profile_routes import router as profile_routes_router
 from routers.career_path_routes import router as career_path_routes_router
+
 from routers.interview_routes import router as interview_routes_router
 from routers.job_market import router as job_market_router
 from routers.review_resume import router as review_resume_router
 from routers.chatbot import router as chatbot_router
 from routers.skill_job_matching import router as skill_job_matching_router
 from routers.job_matching import router as job_matching_router
-from routers.market_analysis import router as market_analysis_router
 
-# Configure logging to see server status in the terminal
-logging.basicConfig(level=logging.INFO)
+
+
+
+# ── Logging ───────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-# --- Database Table Creation ---
-# This function creates all the tables defined in your models.py
+
+# ── DB Setup ──────────────────────────────────────────────────
 def create_db_and_tables():
     try:
-        logger.info("Attempting to connect to the database and create tables...")
+        logger.info("Connecting to database and creating tables...")
         Base.metadata.create_all(bind=engine)
-        logger.info("Database connection successful and tables created/verified.")
+        logger.info("✅ Database ready.")
     except Exception as e:
-        logger.error(f"Error connecting to the database or creating tables: {e}")
+        logger.error(f"❌ Database error: {e}")
 
-# --- Lifespan Context Manager ---
+
+# ── Lifespan ──────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     create_db_and_tables()
+    logger.info("🚀 CareerBridge AI Backend started")
     yield
-    # Shutdown (if needed)
+    logger.info("🛑 CareerBridge AI Backend stopped")
 
-# --- FastAPI App Initialization ---
+
+# ── App Init ──────────────────────────────────────────────────
 app = FastAPI(
-    title="CareerUp AI API",
-    description="Backend services for the CareerUp platform, handling user auth, profiles, and AI-powered career tools.",
-    version="1.0.0",
-    lifespan=lifespan
+    title="CareerBridge AI API",
+    description="Multi-portal backend — Students, Institutions, Companies & Startups.",
+    version="2.0.0",
+    lifespan=lifespan,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc"
 )
 
-# --- CORS (Cross-Origin Resource Sharing) Middleware ---
-# This allows your React frontend to communicate with this backend.
-# IMPORTANT: For production, you should restrict this to your actual frontend domain.
+
+# ── CORS ──────────────────────────────────────────────────────
 origins = [
-    "http://localhost:5173",  # Default Vite/React frontend address
-    "http://localhost:5174",  # Vite/React frontend address (current)
-    "http://localhost:5175",  # Vite/React frontend address (now)
-    "http://localhost:5176",  # Vite/React frontend address (current)
-    "http://localhost:3000",  # Common alternative for React dev servers
-    "https://career-ai-om767.vercel.app",  # Deployed Vercel frontend URL
-    # Add your deployed frontend URL here when you go live
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    "http://localhost:5176",
+    "http://localhost:3000",
 ]
 
 app.add_middleware(
@@ -66,33 +83,65 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Process-Time", "X-Rate-Limit-Remaining"],
 )
 
-# --- Include All Routers ---
-# This adds all the API endpoints from your different feature files to the main app.
-logger.info("Including API routers...")
+
+# ── Security Middleware ────────────────────────────────────────
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    client_ip = get_client_ip(request)
+    start_time = time.time()
+
+    # Global rate limit: 200 req/min per IP
+    if general_limiter.is_rate_limited(client_ip, max_requests=200, window_seconds=60):
+        logger.warning(f"🚫 Rate limit exceeded: {client_ip}")
+        return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded."})
+
+    response = await call_next(request)
+
+    # Security headers
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(round(process_time, 4))
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+    return response
+
+
+# ── Routers ───────────────────────────────────────────────────
 app.include_router(auth_router)
 app.include_router(user_router)
 app.include_router(profile_routes_router)
 app.include_router(career_path_routes_router)
 app.include_router(interview_routes_router)
 app.include_router(job_market_router)
-app.include_router(review_resume_router) # Assuming you have a review_resume.py router
+app.include_router(review_resume_router)
 app.include_router(chatbot_router)
 app.include_router(skill_job_matching_router)
 app.include_router(job_matching_router)
-app.include_router(market_analysis_router)
 
-# Remove the incorrect alias function because APIRouter object has no such attribute.
-# Instead, rely on the /market-insights route registered in market_analysis_router directly.
-
-# The market_analysis_router is already included:
-app.include_router(market_analysis_router)
-logger.info("All routers included successfully.")
+logger.info("✅ All routers loaded.")
 
 
-# --- Root Endpoint (Health Check) ---
-# A simple endpoint to confirm that the server is running.
-@app.get("/", tags=["Health Check"])
-def read_root():
-    return {"message": "Welcome to the CareerUp AI Backend!"}
+# ── Global Error Handler ──────────────────────────────────────
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error on {request.url}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An unexpected error occurred. Please try again."}
+    )
+
+
+# ── Health Checks ─────────────────────────────────────────────
+@app.get("/", tags=["Health"])
+def root():
+    return {"message": "CareerBridge AI Backend v2.0.0", "status": "healthy"}
+
+
+@app.get("/api/health", tags=["Health"])
+def health():
+    return {"status": "ok", "timestamp": time.time(), "version": "2.0.0"}

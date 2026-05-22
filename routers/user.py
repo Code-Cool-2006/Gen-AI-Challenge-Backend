@@ -11,6 +11,8 @@ from models import User
 from schemas import UserSchema
 from utils.security import verify_token
 
+
+
 # -----------------------------------------------------------
 # Router Setup
 # -----------------------------------------------------------
@@ -40,7 +42,8 @@ def get_current_user(
     )
 
     # 1. Verify token and extract email
-    email = verify_token(token, credentials_exception)
+    token_data = verify_token(token, credentials_exception)
+    email = token_data.get("email")
 
     # 2. Load user
     user = db.query(User).filter(User.email == email).first()

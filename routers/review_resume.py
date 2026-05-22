@@ -7,16 +7,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Load API key from environment variables
-GEMINI_API_KEY = os.getenv("VITE_GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
-    raise RuntimeError("❌ GEMINI_API_KEY is missing in .env file. Please add it.")
+    GEMINI_API_KEY = None
+
 
 # Configure Google Generative AI with the API key
-genai.configure(api_key=GEMINI_API_KEY)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
 
 # Initialize the model (using the latest available model name, adjust if needed)
-model = genai.GenerativeModel("gemini-2.5-flash")
+model = genai.GenerativeModel("gemini-2.5-flash") if GEMINI_API_KEY else None
+
 
 # --- Pydantic Models ---
 class ResumeReviewRequest(BaseModel):
